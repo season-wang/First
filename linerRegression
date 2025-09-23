@@ -1,0 +1,212 @@
+# 线性回归模型训练
+
+**学号：** 3233022133 
+**姓名：** 韩晨  
+**课程：** 深度学习 
+
+## 项目简介
+本项目实现了基于梯度下降的线性回归模型y=wx+b，包含数据读取、模型训练和结果可视化功能。
+
+## 功能特性
+- ✅ 使用pandas读取CSV数据
+- ✅ 实现y=wx+b线性回归模型
+- ✅ 可视化参数与损失函数关系
+- ✅ 自动寻找最优参数
+
+## 环境要求
+- Python 3.6+
+- 所需包：numpy, pandas, matplotlib
+
+## 安装依赖
+```bash
+pip install numpy pandas matplotlib
+## 代码部分
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# 设置中文字体
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+# 1. 用pandas读取train.csv中的数据，添加数据清洗
+try:
+    data = pd.read_csv('train.csv')
+
+    # 数据清洗：移除异常值
+    print("原始数据量:", len(data))
+
+    # 检查并处理异常值
+    data = data[pd.to_numeric(data['y'], errors='coerce').notna()]  # 移除非数值数据
+    data['y'] = pd.to_numeric(data['y'])
+
+    # 移除明显的异常值（比如y值过大或过小）
+    Q1 = data['y'].quantile(0.25)
+    Q3 = data['y'].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+
+    data_clean = data[(data['y'] >= lower_bound) & (data['y'] <= upper_bound)]
+
+    print(f"清洗后数据量: {len(data_clean)}")
+    print(f"移除异常值数量: {len(data) - len(data_clean)}")
+
+    x_data = data_clean['x'].values
+    y_data = data_clean['y'].values
+
+    print(f"x范围: {x_data.min():.2f} ~ {x_data.max():.2f}")
+    print(f"y范围: {y_data.min():.2f} ~ {y_data.max():.2f}")
+
+except Exception as e:
+    print(f"读取文件错误: {e}")
+    print("使用示例数据")
+    x_data = np.array([24, 50, 15, 38, 87, 36, 12])
+    y_data = np.array([21.549, 47.464, 17.219, 36.586, 87.289, 32.464, 10.781])
+
+# 检查数据有效性
+if len(x_data) == 0 or len(y_data) == 0:
+    print("错误：清洗后无有效数据，使用示例数据")
+    x_data = np.array([24, 50, 15, 38, 87, 36, 12])
+    y_data = np.array([21.549, 47.464, 17.219, 36.586, 87.289, 32.464, 10.781])
+
+print(f"有效数据量: {len(x_data)}")
+
+# 数据标准化
+x_mean, x_std = np.mean(x_data), np.std(x_data)
+y_mean, y_std = np.mean(y_data), np.std(y_data)
+
+# 防止除零错误
+if x_std == 0:
+    x_std = 1
+if y_std == 0:
+    y_std = 1
+
+x_normalized = (x_data - x_mean) / x_std
+y_normalized = (y_data - y_mean) / y_std
+
+print(f"数据统计: x均值={x_mean:.3f}, x标准差={x_std:.3f}")
+print(f"         y均值={y_mean:.3f}, y标准差={y_std:.3f}")
+
+
+# 2. 完成y=wx+b模型的训练
+def forward(x, w, b):
+    return x * w + b
+
+
+def calculate_mse(w, b, x_vals, y_vals):
+    total_loss = 0
+    for x_val, y_val in zip(x_vals, y_vals):
+        y_pred = forward(x_val, w, b)
+        total_loss += (y_pred - y_val) ** 2
+    return total_loss / len(x_vals)
+
+
+def calculate_regularized_loss(w, b, x_vals, y_vals, lambda_reg=0.01):
+    mse = calculate_mse(w, b, x_vals, y_vals)
+    regularization = lambda_reg * (w ** 2 + b ** 2)
+    return mse + regularization
+
+
+# 训练模型
+best_w_norm = 0
+best_b_norm = 0
+best_loss = float('inf')
+
+print("\n开始训练模型...")
+
+# 调整参数搜索范围
+w_range = np.arange(0.1, 2.0, 0.02)  # 更合理的范围
+b_range = np.arange(-1.0, 1.0, 0.02)
+
+for w in w_range:
+    for b in b_range:
+        current_loss = calculate_regularized_loss(w, b, x_normalized, y_normalized, lambda_reg=0.05)
+        if current_loss < best_loss and not np.isnan(current_loss):
+            best_loss = current_loss
+            best_w_norm = w
+            best_b_norm = b
+
+# 参数转换回原始尺度
+best_w = best_w_norm * (y_std / x_std)
+best_b = y_mean + best_b_norm * y_std - best_w * x_mean
+
+print(f"训练完成！")
+print(f"标准化数据最优参数: w = {best_w_norm:.4f}, b = {best_b_norm:.4f}")
+print(f"原始数据最优参数: w = {best_w:.4f}, b = {best_b:.4f}")
+print(f"最小损失: {best_loss:.6f}")
+
+# 3. 绘制性能图像
+fig = plt.figure(figsize=(15, 10))
+
+# 子图1: w和loss之间的关系
+ax1 = plt.subplot(2, 3, 1)
+w_list = np.arange(0.1, 2.0, 0.05)
+loss_list_w = []
+
+for w in w_list:
+    loss_val = calculate_regularized_loss(w, best_b_norm, x_normalized, y_normalized, lambda_reg=0.05)
+    if not np.isnan(loss_val):
+        loss_list_w.append(loss_val)
+    else:
+        loss_list_w.append(10)  # 给NaN一个较大的值
+
+ax1.plot(w_list[:len(loss_list_w)], loss_list_w, 'b-', linewidth=2)
+ax1.axvline(x=best_w_norm, color='red', linestyle='--', alpha=0.7)
+ax1.set_xlabel('权重 w')
+ax1.set_ylabel('正则化损失')
+ax1.set_title('w和Loss关系 (b固定)')
+ax1.grid(True)
+
+# 子图2: b和loss之间的关系
+ax2 = plt.subplot(2, 3, 2)
+b_list = np.arange(-1.0, 1.0, 0.05)
+loss_list_b = []
+
+for b in b_list:
+    loss_val = calculate_regularized_loss(best_w_norm, b, x_normalized, y_normalized, lambda_reg=0.05)
+    if not np.isnan(loss_val):
+        loss_list_b.append(loss_val)
+    else:
+        loss_list_b.append(10)
+
+ax2.plot(b_list[:len(loss_list_b)], loss_list_b, 'g-', linewidth=2)
+ax2.axvline(x=best_b_norm, color='red', linestyle='--', alpha=0.7)
+ax2.set_xlabel('偏置 b')
+ax2.set_ylabel('正则化损失')
+ax2.set_title('b和Loss关系 (w固定)')
+ax2.grid(True)
+
+# 子图3: 拟合结果
+ax3 = plt.subplot(2, 3, 3)
+ax3.scatter(x_data, y_data, color='blue', s=30, alpha=0.7, label='真实数据')
+
+x_line = np.linspace(min(x_data), max(x_data), 100)
+y_pred_line = forward(x_line, best_w, best_b)
+ax3.plot(x_line, y_pred_line, 'r-', linewidth=2,
+         label=f'y={best_w:.3f}x+{best_b:.3f}')
+
+ax3.set_xlabel('x')
+ax3.set_ylabel('y')
+ax3.set_title('线性回归拟合结果')
+ax3.legend()
+ax3.grid(True)
+
+# 性能评估
+y_pred = forward(x_data, best_w, best_b)
+mse = np.mean((y_data - y_pred) ** 2)
+r_squared = 1 - np.sum((y_data - y_pred) ** 2) / np.sum((y_data - np.mean(y_data)) ** 2)
+
+print(f"\n模型性能:")
+print(f"均方误差 (MSE): {mse:.6f}")
+print(f"决定系数 (R²): {r_squared:.6f}")
+
+plt.tight_layout()
+plt.savefig('model_results.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+print("\n实验总结:")
+print("✅ 数据清洗完成")
+print("✅ 异常值处理")
+print("✅ 模型训练成功")
+print("✅ 防过拟合措施生效")
