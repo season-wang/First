@@ -1,0 +1,408 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+import warnings
+
+warnings.filterwarnings('ignore')  # 忽略一些matplotlib的警告
+
+# 设置中文字体
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+# 设置随机种子以确保可重复性
+torch.manual_seed(42)
+np.random.seed(42)
+
+# 1. 数据读取和清洗
+try:
+    data = pd.read_csv('train.csv')
+    print("原始数据量:", len(data))
+
+    # 数据清洗
+    data = data[pd.to_numeric(data['y'], errors='coerce').notna()]
+    data['y'] = pd.to_numeric(data['y'])
+
+    # 移除异常值
+    Q1 = data['y'].quantile(0.25)
+    Q3 = data['y'].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+
+    data_clean = data[(data['y'] >= lower_bound) & (data['y'] <= upper_bound)]
+    print(f"清洗后数据量: {len(data_clean)}")
+
+    x_data = data_clean['x'].values.astype(np.float32)
+    y_data = data_clean['y'].values.astype(np.float32)
+
+except Exception as e:
+    print(f"读取文件错误: {e}")
+    print("使用示例数据")
+    # 生成示例数据
+    np.random.seed(42)
+    n_samples = 1000  # 增加样本数量以减少过拟合风险
+    x_data = np.random.rand(n_samples).astype(np.float32) * 10
+    y_data = 2.5 * x_data + 1.3 + np.random.randn(n_samples).astype(np.float32) * 0.5
+
+print(f"x范围: {x_data.min():.2f} ~ {x_data.max():.2f}")
+print(f"y范围: {y_data.min():.2f} ~ {y_data.max():.2f}")
+
+# 分割数据集为训练集和验证集
+split_idx = int(0.8 * len(x_data))
+x_train, x_val = x_data[:split_idx], x_data[split_idx:]
+y_train, y_val = y_data[:split_idx], y_data[split_idx:]
+
+print(f"训练集大小: {len(x_train)}, 验证集大小: {len(x_val)}")
+
+# 数据标准化 (仅在训练集上计算均值和标准差)
+x_mean, x_std = np.mean(x_train), np.std(x_train)
+y_mean, y_std = np.mean(y_train), np.std(y_train)
+
+if x_std == 0: x_std = 1
+if y_std == 0: y_std = 1
+
+x_train_norm = (x_train - x_mean) / x_std
+y_train_norm = (y_train - y_mean) / y_std
+x_val_norm = (x_val - x_mean) / x_std
+y_val_norm = (y_val - y_mean) / y_std
+
+print(f"数据统计: x均值={x_mean:.3f}, x标准差={x_std:.3f}")
+print(f"         y均值={y_mean:.3f}, y标准差={y_std:.3f}")
+
+# 2. 转换为PyTorch张量
+x_train_tensor = torch.from_numpy(x_train_norm).reshape(-1, 1)
+y_train_tensor = torch.from_numpy(y_train_norm).reshape(-1, 1)
+x_val_tensor = torch.from_numpy(x_val_norm).reshape(-1, 1)
+y_val_tensor = torch.from_numpy(y_val_norm).reshape(-1, 1)
+
+# 创建数据集和数据加载器
+train_dataset = TensorDataset(x_train_tensor, y_train_tensor)
+val_dataset = TensorDataset(x_val_tensor, y_val_tensor)
+batch_size = 32
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+
+# 3. 定义线性回归模型，初始化权重和偏置为正态分布
+class LinearRegression(nn.Module):
+    def __init__(self):
+        super(LinearRegression, self).__init__()
+        self.linear = nn.Linear(1, 1)  # 输入特征1个，输出1个
+        # 初始化权重和偏置参数使其满足正态分布
+        nn.init.normal_(self.linear.weight, mean=0.0, std=0.01)
+        nn.init.normal_(self.linear.bias, mean=0.0, std=0.01)
+
+    def forward(self, x):
+        return self.linear(x)
+
+
+# 定义训练函数
+def train_model_with_validation(model, train_loader, val_loader, num_epochs, optimizer, criterion):
+    w_history = []
+    b_history = []
+    train_loss_history = []
+    val_loss_history = []
+
+    for epoch in range(num_epochs):
+        # 训练阶段
+        model.train()
+        total_train_loss = 0
+        for batch_x, batch_y in train_loader:
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_train_loss += loss.item()
+
+        # 验证阶段
+        model.eval()
+        total_val_loss = 0
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                outputs = model(batch_x)
+                loss = criterion(outputs, batch_y)
+                total_val_loss += loss.item()
+
+        # 记录参数和损失
+        current_w = model.linear.weight.item()
+        current_b = model.linear.bias.item()
+        avg_train_loss = total_train_loss / len(train_loader)
+        avg_val_loss = total_val_loss / len(val_loader)
+
+        w_history.append(current_w)
+        b_history.append(current_b)
+        train_loss_history.append(avg_train_loss)
+        val_loss_history.append(avg_val_loss)
+
+        # 打印训练信息
+        if epoch % 100 == 0:
+            print(
+                f'Epoch [{epoch}/{num_epochs}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}, w: {current_w:.4f}, b: {current_b:.4f}')
+
+    return w_history, b_history, train_loss_history, val_loss_history
+
+
+# 定义评估函数
+def evaluate_model(model, x_tensor, y_tensor, x_data, y_data):
+    model.eval()
+    with torch.no_grad():
+        y_pred_norm = model(x_tensor).numpy().flatten()
+
+    # 转换回原始尺度
+    y_pred = y_pred_norm * y_std + y_mean
+
+    # 计算评估指标
+    mse = mean_squared_error(y_data, y_pred)
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(y_data, y_pred)
+    r2 = r2_score(y_data, y_pred)
+
+    # 对于回归问题，准确率和召回率不适用，我们计算其他指标
+    # 使用R²作为主要性能指标
+    return mse, rmse, mae, r2, y_pred
+
+
+# 选择三种不同的优化器
+optimizers_to_test = {
+    'SGD': lambda params: optim.SGD(params, lr=0.01),
+    'Adam': lambda params: optim.Adam(params, lr=0.01),
+    'RMSprop': lambda params: optim.RMSprop(params, lr=0.01)
+}
+
+# 训练并记录每种优化器的结果
+results = {}
+num_epochs = 500
+criterion = nn.MSELoss()
+
+for opt_name, opt_func in optimizers_to_test.items():
+    print(f"\n开始训练优化器: {opt_name}")
+    model = LinearRegression()  # 每次用新的模型实例确保初始参数一致
+    optimizer = opt_func(model.parameters())
+
+    w_hist, b_hist, train_loss_hist, val_loss_hist = train_model_with_validation(
+        model, train_dataloader, val_dataloader, num_epochs, optimizer, criterion)
+    results[opt_name] = {
+        'w': w_hist,
+        'b': b_hist,
+        'train_loss': train_loss_hist,
+        'val_loss': val_loss_hist,
+        'model': model  # 保存训练好的模型
+    }
+
+    # 评估模型
+    mse, rmse, mae, r2, _ = evaluate_model(model, x_val_tensor, y_val_tensor, x_val, y_val)
+    print(f"{opt_name} 验证集评估 - MSE: {mse:.6f}, RMSE: {rmse:.6f}, MAE: {mae:.6f}, R²: {r2:.6f}")
+
+# 4. 可视化不同优化器的性能
+plt.figure(figsize=(18, 6))
+
+# 子图1: 训练和验证损失比较
+plt.subplot(1, 3, 1)
+for opt_name, data in results.items():
+    plt.plot(data['train_loss'], label=f'{opt_name}_train', linewidth=2)
+    plt.plot(data['val_loss'], label=f'{opt_name}_val', linestyle='--', linewidth=2)
+plt.xlabel('迭代次数', fontsize=12)
+plt.ylabel('损失值', fontsize=12)
+plt.title('不同优化器的训练与验证损失', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend()
+plt.yscale('log')  # 使用对数尺度更好地观察损失下降
+
+# 子图2: 权重w的变化比较
+plt.subplot(1, 3, 2)
+for opt_name, data in results.items():
+    plt.plot(data['w'], label=opt_name, linewidth=2)
+plt.xlabel('迭代次数', fontsize=12)
+plt.ylabel('权重 w', fontsize=12)
+plt.title('不同优化器的权重w变化', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend()
+
+# 子图3: 偏置b的变化比较
+plt.subplot(1, 3, 3)
+for opt_name, data in results.items():
+    plt.plot(data['b'], label=opt_name, linewidth=2)
+plt.xlabel('迭代次数', fontsize=12)
+plt.ylabel('偏置 b', fontsize=12)
+plt.title('不同优化器的偏置b变化', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# 5. 模型性能评估可视化
+plt.figure(figsize=(15, 10))
+
+# 准备性能数据
+optim_names = list(results.keys())
+mse_vals = []
+rmse_vals = []
+mae_vals = []
+r2_vals = []
+
+for opt_name in optim_names:
+    model = results[opt_name]['model']
+    mse, rmse, mae, r2, _ = evaluate_model(model, x_val_tensor, y_val_tensor, x_val, y_val)
+    mse_vals.append(mse)
+    rmse_vals.append(rmse)
+    mae_vals.append(mae)
+    r2_vals.append(r2)
+
+# 子图1: MSE比较
+plt.subplot(2, 3, 1)
+bars = plt.bar(optim_names, mse_vals, color=['blue', 'orange', 'green'])
+plt.ylabel('MSE', fontsize=12)
+plt.title('不同优化器的MSE比较', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+# 在柱状图上添加数值标签
+for bar, val in zip(bars, mse_vals):
+    plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(mse_vals) * 0.01,
+             f'{val:.4f}', ha='center', va='bottom', fontsize=10)
+
+# 子图2: RMSE比较
+plt.subplot(2, 3, 2)
+bars = plt.bar(optim_names, rmse_vals, color=['blue', 'orange', 'green'])
+plt.ylabel('RMSE', fontsize=12)
+plt.title('不同优化器的RMSE比较', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+for bar, val in zip(bars, rmse_vals):
+    plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(rmse_vals) * 0.01,
+             f'{val:.4f}', ha='center', va='bottom', fontsize=10)
+
+# 子图3: MAE比较
+plt.subplot(2, 3, 3)
+bars = plt.bar(optim_names, mae_vals, color=['blue', 'orange', 'green'])
+plt.ylabel('MAE', fontsize=12)
+plt.title('不同优化器的MAE比较', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+for bar, val in zip(bars, mae_vals):
+    plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(mae_vals) * 0.01,
+             f'{val:.4f}', ha='center', va='bottom', fontsize=10)
+
+# 子图4: R²比较 (主要性能指标)
+plt.subplot(2, 3, 4)
+bars = plt.bar(optim_names, r2_vals, color=['blue', 'orange', 'green'])
+plt.ylabel('R²', fontsize=12)
+plt.title('不同优化器的R²比较', fontsize=14)
+plt.ylim(0, 1)  # R²的取值范围是0到1
+plt.grid(True, linestyle='--', alpha=0.6)
+for bar, val in zip(bars, r2_vals):
+    plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+             f'{val:.4f}', ha='center', va='bottom', fontsize=10)
+
+# 子图5: 预测vs实际值散点图 (以最优优化器为例，这里选择R²最高的)
+best_opt_idx = np.argmax(r2_vals)
+best_opt_name = optim_names[best_opt_idx]
+best_model = results[best_opt_name]['model']
+_, _, _, _, y_pred_best = evaluate_model(best_model, x_val_tensor, y_val_tensor, x_val, y_val)
+
+plt.subplot(2, 3, 5)
+plt.scatter(y_val, y_pred_best, alpha=0.6, color='blue')
+plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'r--', lw=2)
+plt.xlabel('实际值', fontsize=12)
+plt.ylabel('预测值', fontsize=12)
+plt.title(f'{best_opt_name} 预测vs实际值', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+
+# 子图6: 残差图 (以最优优化器为例)
+plt.subplot(2, 3, 6)
+residuals = y_val - y_pred_best
+plt.scatter(y_pred_best, residuals, alpha=0.6, color='purple')
+plt.axhline(y=0, color='r', linestyle='--')
+plt.xlabel('预测值', fontsize=12)
+plt.ylabel('残差 (实际值 - 预测值)', fontsize=12)
+plt.title(f'{best_opt_name} 残差分析', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+
+plt.tight_layout()
+plt.show()
+
+# 6. 调节参数epoch和学习率η的可视化
+epoch_values = [100, 300, 500, 700]
+lr_values = [0.001, 0.01, 0.1]
+
+# 6.1 调节epoch的可视化 (以Adam优化器为例)
+plt.figure(figsize=(15, 5))
+
+for epoch_val in epoch_values:
+    model_temp = LinearRegression()
+    optimizer_temp = optim.Adam(model_temp.parameters(), lr=0.01)  # 固定学习率
+    _, _, train_loss_temp, val_loss_temp = train_model_with_validation(
+        model_temp, train_dataloader, val_dataloader, epoch_val, optimizer_temp, criterion)
+    plt.plot(train_loss_temp, label=f'Train_Epochs={epoch_val}', linewidth=2)
+    plt.plot(val_loss_temp, label=f'Val_Epochs={epoch_val}', linestyle='--', linewidth=2)
+
+plt.xlabel('迭代次数', fontsize=12)
+plt.ylabel('损失值', fontsize=12)
+plt.title('不同Epochs下的训练与验证损失 (Adam, lr=0.01)', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend()
+plt.yscale('log')
+plt.show()
+
+# 6.2 调节学习率η的可视化 (以Adam优化器为例)
+plt.figure(figsize=(15, 5))
+
+for lr_val in lr_values:
+    model_temp = LinearRegression()
+    optimizer_temp = optim.Adam(model_temp.parameters(), lr=lr_val)  # 变化学习率
+    _, _, train_loss_temp, val_loss_temp = train_model_with_validation(
+        model_temp, train_dataloader, val_dataloader, 500, optimizer_temp, criterion)  # 固定epoch
+    plt.plot(train_loss_temp, label=f'Train_LR={lr_val}', linewidth=2)
+    plt.plot(val_loss_temp, label=f'Val_LR={lr_val}', linestyle='--', linewidth=2)
+
+plt.xlabel('迭代次数', fontsize=12)
+plt.ylabel('损失值', fontsize=12)
+plt.title('不同学习率下的训练与验证损失 (Adam, epochs=500)', fontsize=14)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend()
+plt.yscale('log')
+plt.show()
+
+# 7. 最终性能总结
+print("\n=== 模型性能总结 ===")
+print(f"{'优化器':<10} {'MSE':<10} {'RMSE':<10} {'MAE':<10} {'R²':<10}")
+print("-" * 50)
+for i, opt_name in enumerate(optim_names):
+    print(f"{opt_name:<10} {mse_vals[i]:<10.4f} {rmse_vals[i]:<10.4f} {mae_vals[i]:<10.4f} {r2_vals[i]:<10.4f}")
+
+best_opt_idx = np.argmax(r2_vals)
+best_opt_name = optim_names[best_opt_idx]
+print(f"\n最佳优化器: {best_opt_name} (R² = {r2_vals[best_opt_idx]:.4f})")
+
+# 8. 过拟合检查
+print("\n=== 过拟合检查 ===")
+for opt_name, data in results.items():
+    final_train_loss = data['train_loss'][-1]
+    final_val_loss = data['val_loss'][-1]
+    gap = final_val_loss - final_train_loss
+
+    print(f"{opt_name}: 训练损失={final_train_loss:.6f}, 验证损失={final_val_loss:.6f}, 差值={gap:.6f}")
+    if gap > 0.001:  # 设定一个阈值来判断是否过拟合
+        print(f"  -> 可能存在轻微过拟合")
+    elif gap < -0.001:
+        print(f"  -> 模型可能欠拟合")
+    else:
+        print(f"  -> 模型拟合良好")
+
+print("\n实验总结:")
+print("✅ 权重和偏置参数已初始化为正态分布")
+print("✅ 选择了三种不同优化器 (SGD, Adam, RMSprop)")
+print("✅ 不同优化器的性能已可视化比较")
+print("✅ 实现了训练集和验证集分离以防止过拟合")
+print("✅ 模型性能评估指标 (MSE, RMSE, MAE, R²) 已可视化")
+print("✅ 参数epoch和学习率的调节过程已可视化")
+print("✅ 过拟合检查已实施")
+print("✅ 训练过程完整记录")
+
+
+
